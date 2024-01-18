@@ -8,7 +8,7 @@ from langchain.prompts import PromptTemplate
 from llm_cuisine.core.create_db import get_vectordb
 from llm_cuisine.core.LLM import InternLM_LLM
 
-
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 def load_chain():
     """
     加载问答链
