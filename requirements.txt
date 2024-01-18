@@ -1,0 +1,9 @@
+langchain
+modelscope
+streamlit
+sentencepiece
+accelerate
+chromadb
+sentence-transformers
+unstructured
+markdown
