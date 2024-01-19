@@ -5,8 +5,8 @@ from langchain.vectorstores import Chroma
 from langchain.embeddings.huggingface import HuggingFaceEmbeddings
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
-from llm_cuisine.core.create_db import get_vectordb
-from llm_cuisine.core.LLM import InternLM_LLM
+from core.create_db import get_vectordb
+from core.LLM import InternLM_LLM
 
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 def load_chain():
