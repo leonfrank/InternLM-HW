@@ -15,7 +15,7 @@ def load_chain():
     """
 
     # 加载数据库
-    data_dir = ['data']
+    data_dir = ['lecture3/llm_cuisine/data']
     vectordb = get_vectordb(data_dir)
 
     # 加载模型
