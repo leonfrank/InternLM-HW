@@ -8,3 +8,4 @@ sentence-transformers
 unstructured
 markdown
 pysqlite3-binary
+bitsandbytes
