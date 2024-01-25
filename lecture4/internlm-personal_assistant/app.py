@@ -1,130 +1,160 @@
 # coding: utf-8
 # 导入必要的库
+# Copyright (c) Alibaba Cloud.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
 import os
 import gradio as gr
+import mdtex2html
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.generation import GenerationConfig
 
 
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-"""
-This script refers to the dialogue example of streamlit, the interactive generation code of chatglm2 and transformers.
-We mainly modified part of the code logic to adapt to the generation of our model.
-Please refer to these links below for more information:
-    1. streamlit chat example: https://docs.streamlit.io/knowledge-base/tutorials/build-conversational-apps
-    2. chatglm2: https://github.com/THUDM/ChatGLM2-6B
-    3. transformers: https://github.com/huggingface/transformers
-"""
+MODEL_PATH='leonfrank/internlm-personal_assistant'
 
-from dataclasses import asdict
+"""A simple web interactive chat demo based on gradio."""
 
-import streamlit as st
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers.utils import logging
-
-from tools.transformers.interface import GenerationConfig, generate_interactive
-
-logger = logging.get_logger(__name__)
-
-
-def on_btn_click():
-    del st.session_state.messages
-
-
-@st.cache_resource
-def load_model():
-    model = (
-        AutoModelForCausalLM.from_pretrained("leonfrank/internlm-personal_assistant", trust_remote_code=True)
-        .to(torch.bfloat16)
-        .cuda()
+def _load_model_tokenizer():
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_PATH, trust_remote_code=True, resume_download=True,
     )
-    tokenizer = AutoTokenizer.from_pretrained("leonfrank/internlm-personal_assistant", trust_remote_code=True)
-    return model, tokenizer
+
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_PATH,
+        device_map='auto',
+        trust_remote_code=True,
+        resume_download=True,
+    ).eval()
+
+    config = GenerationConfig.from_pretrained(
+        MODEL_PATH, trust_remote_code=True, resume_download=True,
+    )
+
+    return model, tokenizer, config
 
 
-def prepare_generation_config():
-    with st.sidebar:
-        max_length = st.slider("Max Length", min_value=32, max_value=2048, value=2048)
-        top_p = st.slider("Top P", 0.0, 1.0, 0.8, step=0.01)
-        temperature = st.slider("Temperature", 0.0, 1.0, 0.7, step=0.01)
-        st.button("Clear Chat History", on_click=on_btn_click)
-
-    generation_config = GenerationConfig(max_length=max_length, top_p=top_p, temperature=temperature)
-
-    return generation_config
-
-
-user_prompt = "<|User|>:{user}\n"
-robot_prompt = "<|Bot|>:{robot}<eoa>\n"
-cur_query_prompt = "<|User|>:{user}<eoh>\n<|Bot|>:"
+def postprocess(self, y):
+    if y is None:
+        return []
+    for i, (message, response) in enumerate(y):
+        y[i] = (
+            None if message is None else mdtex2html.convert(message),
+            None if response is None else mdtex2html.convert(response),
+        )
+    return y
 
 
-def combine_history(prompt):
-    messages = st.session_state.messages
-    total_prompt = ""
-    for message in messages:
-        cur_content = message["content"]
-        if message["role"] == "user":
-            cur_prompt = user_prompt.replace("{user}", cur_content)
-        elif message["role"] == "robot":
-            cur_prompt = robot_prompt.replace("{robot}", cur_content)
+gr.Chatbot.postprocess = postprocess
+
+
+def _parse_text(text):
+    lines = text.split("\n")
+    lines = [line for line in lines if line != ""]
+    count = 0
+    for i, line in enumerate(lines):
+        if "```" in line:
+            count += 1
+            items = line.split("`")
+            if count % 2 == 1:
+                lines[i] = f'<pre><code class="language-{items[-1]}">'
+            else:
+                lines[i] = f"<br></code></pre>"
         else:
-            raise RuntimeError
-        total_prompt += cur_prompt
-    total_prompt = total_prompt + cur_query_prompt.replace("{user}", prompt)
-    return total_prompt
+            if i > 0:
+                if count % 2 == 1:
+                    line = line.replace("`", r"\`")
+                    line = line.replace("<", "&lt;")
+                    line = line.replace(">", "&gt;")
+                    line = line.replace(" ", "&nbsp;")
+                    line = line.replace("*", "&ast;")
+                    line = line.replace("_", "&lowbar;")
+                    line = line.replace("-", "&#45;")
+                    line = line.replace(".", "&#46;")
+                    line = line.replace("!", "&#33;")
+                    line = line.replace("(", "&#40;")
+                    line = line.replace(")", "&#41;")
+                    line = line.replace("$", "&#36;")
+                lines[i] = "<br>" + line
+    text = "".join(lines)
+    return text
 
 
-def main():
-    # torch.cuda.empty_cache()
-    print("load model begin.")
-    model, tokenizer = load_model()
-    print("load model end.")
-
-    user_avator = "imgs/宝总.jpeg"
-    robot_avator = "imgs/汪小姐.png"
-
-    st.title("宝总的小秘书")
-
-    generation_config = prepare_generation_config()
-
-    # Initialize chat history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # Display chat messages from history on app rerun
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"], avatar=message.get("avatar")):
-            st.markdown(message["content"])
-
-    # Accept user input
-    if prompt := st.chat_input("What is up?"):
-        # Display user message in chat message container
-        with st.chat_message("user", avatar=user_avator):
-            st.markdown(prompt)
-        real_prompt = combine_history(prompt)
-        # Add user message to chat history
-        st.session_state.messages.append({"role": "user", "content": prompt, "avatar": user_avator})
-
-        with st.chat_message("robot", avatar=robot_avator):
-            message_placeholder = st.empty()
-            for cur_response in generate_interactive(
-                model=model,
-                tokenizer=tokenizer,
-                prompt=real_prompt,
-                additional_eos_token_id=103028,
-                **asdict(generation_config),
-            ):
-                # Display robot response in chat message container
-                message_placeholder.markdown(cur_response + "▌")
-            message_placeholder.markdown(cur_response)
-        # Add robot response to chat history
-        st.session_state.messages.append({"role": "robot", "content": cur_response, "avatar": robot_avator})
+def _gc():
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
 
+def _launch_demo( model, tokenizer, config):
+
+    def predict(_query, _chatbot, _task_history):
+        print(f"User: {_parse_text(_query)}")
+        _chatbot.append((_parse_text(_query), ""))
+        full_response = ""
+
+        for response in model.chat_stream(tokenizer, _query, history=_task_history, generation_config=config):
+            _chatbot[-1] = (_parse_text(_query), _parse_text(response))
+
+            yield _chatbot
+            full_response = _parse_text(response)
+
+        print(f"History: {_task_history}")
+        _task_history.append((_query, full_response))
+        print(f"InternLM: {_parse_text(full_response)}")
+
+    def regenerate(_chatbot, _task_history):
+        if not _task_history:
+            yield _chatbot
+            return
+        item = _task_history.pop(-1)
+        _chatbot.pop(-1)
+        yield from predict(item[0], _chatbot, _task_history)
+
+    def reset_user_input():
+        return gr.update(value="")
+
+    def reset_state(_chatbot, _task_history):
+        _task_history.clear()
+        _chatbot.clear()
+        _gc()
+        return _chatbot
+
+    with gr.Blocks() as demo:
+        gr.Markdown("""\
+<p align="center"><img src="imgs/汪小姐.png" style="height: 80px"/><p>""")
+        gr.Markdown("""<center><font size=8>InternLM Bot</center>""")
+        gr.Markdown(
+            """\
+<center><font size=3>This WebUI is based on InternLM, developed by Alibaba Cloud. \
+(本WebUI基于InternLM打造，实现聊天机器人功能。)</center>""")
+
+        chatbot = gr.Chatbot(label='InternLM', elem_classes="control-height")
+        query = gr.Textbox(lines=2, label='Input')
+        task_history = gr.State([])
+
+        with gr.Row():
+            empty_btn = gr.Button("🧹 Clear History (清除历史)")
+            submit_btn = gr.Button("🚀 Submit (发送)")
+            regen_btn = gr.Button("🤔️ Regenerate (重试)")
+
+        submit_btn.click(predict, [query, chatbot, task_history], [chatbot], show_progress=True)
+        submit_btn.click(reset_user_input, [], [query])
+        empty_btn.click(reset_state, [chatbot, task_history], outputs=[chatbot], show_progress=True)
+        regen_btn.click(regenerate, [chatbot, task_history], [chatbot], show_progress=True)
+
+    demo.launch()
 
 
-if __name__ == "__main__":
+def main():
+
+    model, tokenizer, config = _load_model_tokenizer()
+    _launch_demo(model, tokenizer, config)
+
+
+if __name__ == '__main__':
     main()
-
-

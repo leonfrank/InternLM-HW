@@ -1,5 +1,6 @@
 langchain
 modelscope
+mdtex2html
 streamlit==1.24.0
 sentencepiece
 accelerate
