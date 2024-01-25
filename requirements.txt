@@ -1,6 +1,6 @@
 langchain
 modelscope
-streamlit
+streamlit==1.24.0
 sentencepiece
 accelerate
 chromadb
