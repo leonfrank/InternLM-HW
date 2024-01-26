@@ -1,160 +1,117 @@
 # coding: utf-8
 # 导入必要的库
-# Copyright (c) Alibaba Cloud.
-#
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
 import os
 import gradio as gr
-import mdtex2html
-
+from typing import Any, List, Optional
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from langchain.llms.base import LLM
+from langchain.callbacks.manager import CallbackManagerForLLMRun
+from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers.generation import GenerationConfig
-
 
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-MODEL_PATH='leonfrank/internlm-personal_assistant'
 
-"""A simple web interactive chat demo based on gradio."""
+class InternLM_LLM(LLM):
+    # 基于本地 InternLM 自定义 LLM 类
+    tokenizer : AutoTokenizer = None
+    model: AutoModelForCausalLM = None
 
-def _load_model_tokenizer():
-    tokenizer = AutoTokenizer.from_pretrained(
-        MODEL_PATH, trust_remote_code=True, resume_download=True,
-    )
+    def __init__(self, model_path :str):
+        # model_path: InternLM 模型路径
+        # 从本地初始化模型
+        super().__init__()
+        print("正在从本地加载模型...")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True, load_in_8bit=True, device_map='auto')
+        self.model = self.model.eval()
+        print("完成本地模型的加载")
 
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_PATH,
-        device_map='auto',
-        trust_remote_code=True,
-        resume_download=True,
-    ).eval()
-
-    config = GenerationConfig.from_pretrained(
-        MODEL_PATH, trust_remote_code=True, resume_download=True,
-    )
-
-    return model, tokenizer, config
-
-
-def postprocess(self, y):
-    if y is None:
-        return []
-    for i, (message, response) in enumerate(y):
-        y[i] = (
-            None if message is None else mdtex2html.convert(message),
-            None if response is None else mdtex2html.convert(response),
-        )
-    return y
+    def _call(self, prompt : str, stop: Optional[List[str]] = None,
+                run_manager: Optional[CallbackManagerForLLMRun] = None,
+                **kwargs: Any):
+        # 重写调用函数
+        system_prompt = """You are an AI assistant whose name is leonfrank的小助手
+                        """
+        messages = [(system_prompt, '')]
+        response, history = self.model.chat(self.tokenizer, prompt , history=messages)
+        return response
+        
+    @property
+    def _llm_type(self) -> str:
+        return "InternLM"
 
 
-gr.Chatbot.postprocess = postprocess
+def init_chain():
+    # 加载模型
+    llm = InternLM_LLM(model_path = 'leonfrank/internlm-personal_assistant')
+
+    # 你可以修改这里的 prompt template 来试试不同的问答效果
+    template = """
+    Question: {question}
+    Answer:"""
+
+    prompt = PromptTemplate(input_variables=["question"], template=template)
+
+    # 运行 chain
+
+    llm_chain = LLMChain(prompt=prompt, llm=llm)
+
+    return llm, llm_chain
+
+class Model_center():
+    """
+    存储问答 Chain 的对象 
+    """
+    def __init__(self):
+        self.llm ,self.chain = init_chain()
+
+    def qa_chain(self, question: str, chat_history: list = []):
+        """
+        调用不带历史记录的问答链进行回答
+        """
+        if question == None or len(question) < 1:
+            return "", chat_history
+        try:
+            chat_history.append(
+                (question, self.chain.run(question=question)))
+            return "", chat_history
+        except Exception as e:
+            return e, chat_history
 
 
-def _parse_text(text):
-    lines = text.split("\n")
-    lines = [line for line in lines if line != ""]
-    count = 0
-    for i, line in enumerate(lines):
-        if "```" in line:
-            count += 1
-            items = line.split("`")
-            if count % 2 == 1:
-                lines[i] = f'<pre><code class="language-{items[-1]}">'
-            else:
-                lines[i] = f"<br></code></pre>"
-        else:
-            if i > 0:
-                if count % 2 == 1:
-                    line = line.replace("`", r"\`")
-                    line = line.replace("<", "&lt;")
-                    line = line.replace(">", "&gt;")
-                    line = line.replace(" ", "&nbsp;")
-                    line = line.replace("*", "&ast;")
-                    line = line.replace("_", "&lowbar;")
-                    line = line.replace("-", "&#45;")
-                    line = line.replace(".", "&#46;")
-                    line = line.replace("!", "&#33;")
-                    line = line.replace("(", "&#40;")
-                    line = line.replace(")", "&#41;")
-                    line = line.replace("$", "&#36;")
-                lines[i] = "<br>" + line
-    text = "".join(lines)
-    return text
+model_center = Model_center()
 
+block = gr.Blocks()
+with block as demo:
+    with gr.Row(equal_height=True):   
+        with gr.Column(scale=15):
+            gr.Markdown("""<h1><center>InternLM</center></h1>
+                <center><font size=8>宝总的小秘书</center>
+                """)
+        # gr.Image(value=LOGO_PATH, scale=1, min_width=10,show_label=False, show_download_button=False)
 
-def _gc():
-    import gc
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    with gr.Row():
+        with gr.Column(scale=4):
+            chatbot = gr.Chatbot(height=450, show_copy_button=True, avatar_images=("lecture4/internlm-personal_assistant/imgs/宝总.jpeg", "lecture4/internlm-personal_assistant/imgs/汪小姐.png"))
+            # 创建一个文本框组件，用于输入 prompt。
+            msg = gr.Textbox(label="Prompt/问题")
 
+            with gr.Row():
+                # 创建提交按钮。
+                btn = gr.Button("Chat")
+            with gr.Row():
+                # 创建一个清除按钮，用于清除聊天机器人组件的内容。
+                clear = gr.ClearButton(
+                    components=[chatbot], value="Clear console")
+                
+        # 设置按钮的点击事件。当点击时，调用上面定义的 qa_chain_self_answer 函数，并传入用户的消息和聊天历史记录，然后更新文本框和聊天机器人组件。
+        btn.click(model_center.qa_chain, inputs=[
+                            msg, chatbot], outputs=[msg, chatbot])
 
-def _launch_demo( model, tokenizer, config):
-
-    def predict(_query, _chatbot, _task_history):
-        print(f"User: {_parse_text(_query)}")
-        _chatbot.append((_parse_text(_query), ""))
-        full_response = ""
-
-        for response in model.chat_stream(tokenizer, _query, history=_task_history, generation_config=config):
-            _chatbot[-1] = (_parse_text(_query), _parse_text(response))
-
-            yield _chatbot
-            full_response = _parse_text(response)
-
-        print(f"History: {_task_history}")
-        _task_history.append((_query, full_response))
-        print(f"InternLM: {_parse_text(full_response)}")
-
-    def regenerate(_chatbot, _task_history):
-        if not _task_history:
-            yield _chatbot
-            return
-        item = _task_history.pop(-1)
-        _chatbot.pop(-1)
-        yield from predict(item[0], _chatbot, _task_history)
-
-    def reset_user_input():
-        return gr.update(value="")
-
-    def reset_state(_chatbot, _task_history):
-        _task_history.clear()
-        _chatbot.clear()
-        _gc()
-        return _chatbot
-
-    with gr.Blocks() as demo:
-        gr.Markdown("""\
-<p align="center"><img src="imgs/汪小姐.png" style="height: 80px"/><p>""")
-        gr.Markdown("""<center><font size=8>InternLM Bot</center>""")
-        gr.Markdown(
-            """\
-<center><font size=3>This WebUI is based on InternLM, developed by Alibaba Cloud. \
-(本WebUI基于InternLM打造，实现聊天机器人功能。)</center>""")
-
-        chatbot = gr.Chatbot(label='InternLM', elem_classes="control-height")
-        query = gr.Textbox(lines=2, label='Input')
-        task_history = gr.State([])
-
-        with gr.Row():
-            empty_btn = gr.Button("🧹 Clear History (清除历史)")
-            submit_btn = gr.Button("🚀 Submit (发送)")
-            regen_btn = gr.Button("🤔️ Regenerate (重试)")
-
-        submit_btn.click(predict, [query, chatbot, task_history], [chatbot], show_progress=True)
-        submit_btn.click(reset_user_input, [], [query])
-        empty_btn.click(reset_state, [chatbot, task_history], outputs=[chatbot], show_progress=True)
-        regen_btn.click(regenerate, [chatbot, task_history], [chatbot], show_progress=True)
-
-    demo.launch()
-
-
-def main():
-
-    model, tokenizer, config = _load_model_tokenizer()
-    _launch_demo(model, tokenizer, config)
-
-
-if __name__ == '__main__':
-    main()
+# threads to consume the request
+gr.close_all()
+# 启动新的 Gradio 应用，设置分享功能为 True，并使用环境变量 PORT1 指定服务器端口。
+# demo.launch(share=True, server_port=int(os.environ['PORT1']))
+# 直接启动
+demo.launch()
