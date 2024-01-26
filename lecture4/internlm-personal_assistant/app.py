@@ -93,7 +93,7 @@ with block as demo:
 
     with gr.Row():
         with gr.Column(scale=4):
-            chatbot = gr.Chatbot(height=450, show_copy_button=True, avatar_images=("lecture4/internlm-personal_assistant/imgs/宝总.jpeg", "lecture4/internlm-personal_assistant/imgs/汪小姐.png"))
+            chatbot = gr.Chatbot(height=450, show_copy_button=True, avatar_images=("InternLM-HW/lecture4/internlm-personal_assistant/imgs/宝总.jpeg", "InternLM-HW/lecture4/internlm-personal_assistant/imgs/汪小姐.png"))
             # 创建一个文本框组件，用于输入 prompt。
             msg = gr.Textbox(label="Prompt/问题")
 
