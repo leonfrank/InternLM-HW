@@ -10,4 +10,4 @@ unstructured
 markdown
 pysqlite3-binary
 bitsandbytes
-
+gradio==4.4.0
