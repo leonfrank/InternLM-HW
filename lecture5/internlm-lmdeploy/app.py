@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from lmdeploy.serve.gradio.constants import CSS, THEME, disable_btn, enable_btn
 from lmdeploy.turbomind import TurboMind
 from lmdeploy.turbomind.chat import valid_str
+from lmdeploy.model import MODELS, BaseModel
 
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 MODEL_PATH='leonfrank/internlm-lmdeploy-personal_assistant'
@@ -23,26 +24,63 @@ MODEL_NAME='internlm-chat-7b'
 
 """A simple web interactive chat demo based on gradio."""
 
-@contextmanager
-def get_stop_words():
-    from lmdeploy.tokenizer import Tokenizer
-    old_func = Tokenizer.indexes_containing_token
+meta_instruction = """meta instruction
+You are an AI assistant whose name is leonfrank的小秘书.
+conversation
+"""  # noqa
 
-    def new_func(self, token):
-        indexes = self.encode(token, add_bos=False)
-        return indexes
 
-    Tokenizer.indexes_containing_token = new_func
-    yield
-    Tokenizer.indexes_containing_token = old_func
+@MODELS.register_module(name='internlm-chat-7b')
+class InternLMChatTemplate(BaseModel):
+    """Internlm chat template."""
+
+    def __init__(self,
+                 system=meta_instruction,
+                 user='<|User|>:',
+                 assistant='<|Bot|>:',
+                 eoh='<TOKENS_UNUSED_0>',
+                 eoa='<TOKENS_UNUSED_1>',
+                 stop_words=['<TOKENS_UNUSED_0>', '<TOKENS_UNUSED_1>'],
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.system = system
+        self.user = user
+        self.assistant = assistant
+        self.eoh = eoh
+        self.eoa = eoa
+        self.stop_words = stop_words
+
+    def decorate_prompt(self, prompt, sequence_start=True):
+        """Apply chat template to prompt."""
+
+        if sequence_start:
+            return f'{self.system} {self.user} {prompt}{self.eoh} {self.assistant}'  # noqa
+        else:
+            return f' {self.user} {prompt}{self.eoh} {self.assistant}'
+
+    def messages2prompt(self, messages, sequence_start=True):
+        """Apply chat template to history."""
+        if isinstance(messages, str) or isinstance(messages[0], str):
+            return self.decorate_prompt(messages, sequence_start)
+        system, users, assistants = self._translate_messages(messages)
+        system = self.system if not system else system
+        ret = system
+        for user, assistant in zip(users, assistants):
+            if not isinstance(user, str):
+                assert isinstance(user, Sequence)
+                assert all(isinstance(item, dict) for item in user)
+                user = [user[0]['text'], len(user) - 1]
+            if assistant:
+                ret += f' {self.user} {user}{self.eoh} {self.assistant} {assistant}{self.eoa}'  # noqa
+            else:
+                ret += f' {self.user} {user}{self.eoh} {self.assistant}'
+        return ret
 
 
 def _load_model():
-    """Load preprocessor and llm inference engine."""
-    llm_ckpt = MODEL_PATH
-    with get_stop_words():
-        model = TurboMind.from_pretrained(llm_ckpt, model_name=MODEL_NAME)
-    return model
+    # load model
+    tm_model = TurboMind.from_pretrained(MODEL_PATH, model_name='internlm-chat-7b')
+    return tm_model
 
 
 def postprocess(self, y):
@@ -99,8 +137,23 @@ def _gc():
 
 
 
-def _launch_demo( model):
+def _launch_demo( tm_model, decorator):
+    def prepare_query( query, sequence_start=True):
+        """Convert query to input_ids, features and the ranges of features to
+        input_ids."""
+        decorate_text = decorator.decorate_prompt(query)
 
+        return decorate_text
+
+    def add_text(chatbot, session, text):
+        """User query."""
+        chatbot = chatbot + [(text, None)]
+        history = session._message
+        if len(history) == 0 or history[-1][-1] is not None:
+            history.append([text, None])
+        else:
+            history[-1][0].insert(0, text)
+        return chatbot, session, disable_btn, enable_btn
 
     def chat(
         chatbot,
@@ -108,15 +161,15 @@ def _launch_demo( model):
         request_output_len=512,
     ):
         """Chat with AI assistant."""
-        generator = model.create_instance()
+        generator = tm_model.create_instance()
         history = session._message
         sequence_start = len(history) == 1
         seed = random.getrandbits(64) if sequence_start else None
-        input_ids, features, ranges = preprocessor.prepare_query(
+        input_ids, features, ranges = decorator.prepare_query(
             history[-1][0], sequence_start)
 
         if len(input_ids
-               ) + session.step + request_output_len > model.model.session_len:
+               ) + session.step + request_output_len > tm_model.model.session_len:
             gr.Warning('WARNING: exceed session max length.'
                        ' Please restart the session by reset button.')
             yield chatbot, session, enable_btn, disable_btn, enable_btn
@@ -135,7 +188,7 @@ def _launch_demo( model):
                     step=step):
                 res, tokens = outputs[0]
                 # decode res
-                response = model.tokenizer.decode(res.tolist(),
+                response = tm_model.tokenizer.decode(res.tolist(),
                                                   offset=response_size)
                 if response.endswith('�'):
                     continue
@@ -153,7 +206,7 @@ def _launch_demo( model):
 
     def stop(session):
         """Stop the session."""
-        generator = model.create_instance()
+        generator = tm_model.create_instance()
         for _ in generator.stream_infer(session_id=session.session_id,
                                         input_ids=[0],
                                         request_output_len=0,
@@ -174,69 +227,38 @@ def _launch_demo( model):
         session._message = []
         return [], session, enable_btn
 
+    with gr.Blocks(css=CSS, theme=THEME) as demo:
+        with gr.Column(elem_id='container'):
+            gr.Markdown('## LMDeploy InternLM Personal Assistant')
 
-    def predict(_query, _chatbot, _task_history):
-        print(f"User: {_parse_text(_query)}")
-        _chatbot.append((_parse_text(_query), ""))
-        full_response = ""
+            chatbot = gr.Chatbot(elem_id='chatbot', label=tm_model.model_name)
+            query = gr.Textbox(placeholder='Please input the instruction',
+                               label='Instruction')
+            session = gr.State()
 
-        for response in model.chat(tokenizer, _query, history=_task_history, generation_config=config):
-            _chatbot[-1] = (_parse_text(_query), _parse_text(response))
+        send_event = query.submit(
+            add_text, [chatbot, session, query], [chatbot, session]).then(
+                chat, [chatbot, session],
+                [chatbot, session, query, cancel_btn, reset_btn])
+        query.submit(lambda: gr.update(value=''), None, [query])
 
-            yield _chatbot
-            full_response = _parse_text(response)
+        cancel_btn.click(cancel, [chatbot, session],
+                         [chatbot, session, cancel_btn, reset_btn, query],
+                         cancels=[send_event])
 
-        print(f"History: {_task_history}")
-        _task_history.append((_query, full_response))
-        print(f"InternLM: {_parse_text(full_response)}")
+        reset_btn.click(reset, [session], [chatbot, session, query],
+                        cancels=[send_event])
 
-    def regenerate(_chatbot, _task_history):
-        if not _task_history:
-            yield _chatbot
-            return
-        item = _task_history.pop(-1)
-        _chatbot.pop(-1)
-        yield from predict(item[0], _chatbot, _task_history)
+        demo.load(lambda: Session(), inputs=None, outputs=[session])
 
-    def reset_user_input():
-        return gr.update(value="")
-
-    def reset_state(_chatbot, _task_history):
-        _task_history.clear()
-        _chatbot.clear()
-        _gc()
-        return _chatbot
-
-    with gr.Blocks() as demo:
-        gr.Markdown("""\
-<p align="center"><img src="imgs/汪小姐.png" style="height: 80px"/><p>""")
-        gr.Markdown("""<center><font size=8>InternLM Bot</center>""")
-        gr.Markdown(
-            """\
-<center><font size=3>This WebUI is based on InternLM \
-(本WebUI基于InternLM打造，实现聊天机器人功能。)</center>""")
-
-        chatbot = gr.Chatbot(label='InternLM', elem_classes="control-height")
-        query = gr.Textbox(lines=2, label='Input')
-        task_history = gr.State([])
-
-        with gr.Row():
-            empty_btn = gr.Button("🧹 Clear History (清除历史)")
-            submit_btn = gr.Button("🚀 Submit (发送)")
-            regen_btn = gr.Button("🤔️ Regenerate (重试)")
-
-        submit_btn.click(predict, [query, chatbot, task_history], [chatbot], show_progress=True)
-        submit_btn.click(reset_user_input, [], [query])
-        empty_btn.click(reset_state, [chatbot, task_history], outputs=[chatbot], show_progress=True)
-        regen_btn.click(regenerate, [chatbot, task_history], [chatbot], show_progress=True)
-
-    demo.launch()
+    demo.queue().launch()
 
 
 def main():
 
-    model= _load_model()
-    _launch_demo(model)
+    tm_model= _load_model()
+    decorator = InternLMChatTemplate()
+    _launch_demo(tm_model, decorator)
 
 
 if __name__ == '__main__':
